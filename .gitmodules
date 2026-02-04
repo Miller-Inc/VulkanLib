@@ -14,12 +14,6 @@
 [submodule "third_party/json"]
 	path = third_party/json
 	url = git@github.com:nlohmann/json.git
-[submodule "lib/cuda/RenderLib/third_party/stb"]
-	path = lib/cuda/RenderLib/third_party/stb
-	url = git@github.com:nothings/stb.git
-[submodule "lib/cuda/RenderLib/third_party/json"]
-	path = lib/cuda/RenderLib/third_party/json
-	url = git@github.com:nlohmann/json.git
-[submodule "lib/cuda/RenderLib/third_party/asset_importer"]
-	path = lib/cuda/RenderLib/third_party/asset_importer
+[submodule "third_party/asset_importer"]
+	path = third_party/asset_importer
 	url = git@github.com:assimp/assimp.git
