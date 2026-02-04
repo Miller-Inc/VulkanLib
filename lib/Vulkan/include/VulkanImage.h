@@ -53,6 +53,7 @@ public:
     bool DrawRect(int x, int y, int w, int h, const Color& color) override;
     bool DrawLine(int x0, int y0, int x1, int y1, const Color& color, int thickness)override;
     bool DrawFilledCircle(int cx, int cy, int radius, const Color& color) override;
+    bool DrawFilledTriangle(int x0, int y0, int x1, int y1, int x2, int y2, const Color& color)override;
 
 private:
     bool CreateBlankCanvas(uint32_t width, uint32_t height);

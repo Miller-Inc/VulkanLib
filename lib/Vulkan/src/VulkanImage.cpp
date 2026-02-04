@@ -5,6 +5,7 @@
 #include "VulkanImage.h"
 
 #if USE_VULKAN
+#include <algorithm>
 #include <cmath>
 #include <ios>
 #include <iostream>
@@ -859,5 +860,182 @@ bool VkImageResource::DrawFilledCircle(int cx, int cy, int radius, const Color& 
 
     return true;
 }
+
+bool VkImageResource::DrawFilledTriangle(int x0, int y0, int x1, int y1, int x2, int y2, const Color& color)
+{
+    if (!gInstance || !Image) return false;
+    if (Width == 0 || Height == 0) return false;
+
+    // Compute bounding box and clip to canvas
+    int minX = std::min({x0, x1, x2});
+    int maxX = std::max({x0, x1, x2});
+    int minY = std::min({y0, y1, y2});
+    int maxY = std::max({y0, y1, y2});
+
+    int destX = std::max(0, minX);
+    int destY = std::max(0, minY);
+    int endX = std::min((int)Width - 1, maxX);
+    int endY = std::min((int)Height - 1, maxY);
+    if (destX > endX || destY > endY) return false;
+
+    // Convert color once
+    auto [rf, gf, bf, af] = color.fRGBA();
+    uint8_t rc = float_to_u8(rf), gc = float_to_u8(gf), bc = float_to_u8(bf), ac = float_to_u8(af);
+
+    // Helper lambda to compute intersection x for edge (xa,ya)-(xb,yb) at scanline y
+    auto intersectX = [](int xa, int ya, int xb, int yb, int y) -> float {
+        return xa + (float)(xb - xa) * ((float)(y - ya) / (float)(yb - ya));
+    };
+
+    struct Seg { uint32_t x; uint32_t y; uint32_t w; };
+    std::vector<Seg> segments;
+    segments.reserve(endY - destY + 1);
+    size_t totalBytes = 0;
+
+    // For each scanline, compute intersections with triangle edges
+    for (int y = destY; y <= endY; ++y) {
+        std::vector<float> xs;
+        xs.reserve(3);
+
+        // Edges: (x0,y0)-(x1,y1), (x1,y1)-(x2,y2), (x2,y2)-(x0,y0)
+        const std::pair<int,int> verts[3] = {{x0,y0},{x1,y1},{x2,y2}};
+        for (int e = 0; e < 3; ++e) {
+            int xa = verts[e].first;
+            int ya = verts[e].second;
+            int xb = verts[(e+1)%3].first;
+            int yb = verts[(e+1)%3].second;
+
+            // Skip horizontal edges to avoid duplicate intersections;
+            // use half-open interval [minY, maxY) to handle shared vertices.
+            if (ya == yb) continue;
+            int minEdgeY = std::min(ya,yb);
+            int maxEdgeY = std::max(ya,yb);
+            if (y >= minEdgeY && y < maxEdgeY) {
+                xs.push_back(intersectX(xa, ya, xb, yb, y));
+            }
+        }
+
+        if (xs.size() < 2) continue;
+        std::sort(xs.begin(), xs.end());
+
+        // There may be more than two intersections in degenerate cases; pair them
+        for (size_t i = 0; i + 1 < xs.size(); i += 2) {
+            float fx0 = xs[i];
+            float fx1 = xs[i+1];
+            int sx = (int)std::ceil(std::min(fx0, fx1));
+            int ex = (int)std::floor(std::max(fx0, fx1));
+            if (sx > ex) continue;
+
+            // Clip to canvas
+            sx = std::max(sx, destX);
+            ex = std::min(ex, endX);
+            if (sx > ex) continue;
+
+            uint32_t wu = static_cast<uint32_t>(ex - sx + 1);
+            segments.push_back({ static_cast<uint32_t>(sx), static_cast<uint32_t>(y), wu });
+            totalBytes += (size_t)wu * 4;
+        }
+    }
+
+    if (segments.empty()) return false;
+
+    // Vulkan setup handles
+    const GInstance* GameInstance = (GInstance*)gInstance;
+    const auto vSetup = GameInstance->GetVulkanSetup();
+    if (!vSetup) return false;
+
+    VkDevice device = vSetup->device;
+    VkPhysicalDevice phys = vSetup->physicalDevice;
+    VkCommandPool cmdPool = vSetup->commandPool;
+    VkQueue queue = vSetup->queue;
+
+    // Create staging buffer sized to hold all segments packed sequentially
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    VkDeviceSize uploadSize = (VkDeviceSize)totalBytes;
+
+    VkBufferCreateInfo bufInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bufInfo.size = uploadSize;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(device, stagingBuffer, &memReq);
+
+    VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = FindMemoryType(phys, memReq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+
+    // Map and fill packed pixel data for each segment
+    void* mapped = nullptr;
+    vkMapMemory(device, stagingMemory, 0, uploadSize, 0, &mapped);
+    if (!mapped) {
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingMemory, nullptr);
+        return false;
+    }
+    uint8_t* writePtr = reinterpret_cast<uint8_t*>(mapped);
+    for (const Seg& s : segments) {
+        for (size_t i = 0; i < (size_t)s.w; ++i) {
+            writePtr[0] = rc;
+            writePtr[1] = gc;
+            writePtr[2] = bc;
+            writePtr[3] = ac;
+            writePtr += 4;
+        }
+    }
+    vkUnmapMemory(device, stagingMemory);
+
+    // Prepare buffer->image copy regions, buffer offsets correspond to packed segments
+    std::vector<VkBufferImageCopy> regions;
+    regions.reserve(segments.size());
+    VkDeviceSize curOffset = 0;
+    for (const Seg& s : segments) {
+        VkBufferImageCopy region{};
+        region.bufferOffset = curOffset;
+        region.bufferRowLength = 0;   // tightly packed
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = { (int32_t)s.x, (int32_t)s.y, 0 };
+        region.imageExtent = { s.w, 1, 1 };
+        regions.push_back(region);
+        curOffset += (VkDeviceSize)s.w * 4;
+    }
+
+    // Record and submit single-use command buffer: transition -> copy many regions -> transition back
+    VkCommandBuffer cmd = beginSingleUseCommands(device, cmdPool);
+
+    TransitionImageLayoutInline(cmd, Image,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        (uint32_t)regions.size(), regions.data());
+
+    TransitionImageLayoutInline(cmd, Image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    endSingleUseCommands(device, queue, cmdPool, cmd);
+
+    // Cleanup staging resources
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+
+    return true;
+}
+
 
 #endif

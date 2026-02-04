@@ -62,6 +62,7 @@ public:
     virtual bool DrawRect(int x, int y, int w, int h, const Color& color) = 0;
     virtual bool DrawLine(int x0, int y0, int x1, int y1, const Color& color, int thickness) = 0;
     virtual bool DrawFilledCircle(int cx, int cy, int radius, const Color& color) = 0;
+    virtual bool DrawFilledTriangle(int x0, int y0, int x1, int y1, int x2, int y2, const Color& color) = 0;
 
 protected:
     bool bInit = false;

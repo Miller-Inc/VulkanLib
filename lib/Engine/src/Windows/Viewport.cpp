@@ -32,6 +32,11 @@ void Viewport::GenerateCanvas()
     int num = rand() % 20 + 5;
     for (int i = 0; i < num; i++)
     {
+        mImage.ImageResource.DrawFilledTriangle(rand() % 800, rand() % 600,
+            rand() % 800, rand() % 600,
+            rand() % 800, rand() % 600,
+            Colors::RandomColor());
+
         if (i % 10 == 0)
         {
             mImage.ImageResource.DrawLine(rand() % 800, rand() % 600, rand() % 800, rand() % 600, Colors::RandomColor(), rand() % 7 + 1);
