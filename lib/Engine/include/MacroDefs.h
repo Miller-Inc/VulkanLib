@@ -11,13 +11,11 @@
     #define PLATFORM_WINDOWS true
     #define PLATFORM_UNIX false
     #define PLATFORM_MACOSX false
-    #define VULKAN_INCLUDE "Vulkan/vulkan.h"
 #elif __unix__ || __linux__
     #define DLL_EXPORT __attribute__((visibility("default")))
     #define PLATFORM_WINDOWS false
     #define PLATFORM_UNIX true
     #define PLATFORM_MACOSX false
-    #define VULKAN_INCLUDE #include "vulkan/vulkan.h"
 #else
     #error "Unsupported platform"
 #endif

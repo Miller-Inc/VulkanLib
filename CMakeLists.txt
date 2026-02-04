@@ -73,6 +73,7 @@ set(MILLER_RENDER_LIB_HEADERS
         lib/Engine/include/BaseTypes/Image.h
         lib/Engine/include/BaseTypes/Color.h
         lib/Engine/src/BaseTypes/Color.cpp
+        lib/Vulkan/include/VulkanInclude.h
 )
 
 # create executable
