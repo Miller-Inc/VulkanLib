@@ -66,6 +66,7 @@ void GInstance::Init()
 
 void GInstance::Tick(const float deltaTime)
 {
+    EngineTime += deltaTime;
     // Update logic here
     for (const auto& window : mWindows | std::views::values)
     {
@@ -96,7 +97,7 @@ bool GInstance::OpenImage(const std::string& PathToImage, const std::string& Ima
     const GPU::VulkanSetup::TextureImage texture = mSetup->CreateTextureImage(PathToImage);
     if (texture.image == VK_NULL_HANDLE)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::Error, "Failed to load texture image from path: " + PathToImage);
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "Failed to load texture image from path: %s", PathToImage.c_str());
         return false;
     }
     // MImage newImage = {texture, ImageName, texture.size, Position};
@@ -138,7 +139,7 @@ Image* GInstance::OpenGetImage(const std::string& PathToImage, const std::string
         return image;
     }
 
-    M_LOGGER(Logger::LogGraphics, Logger::Error, "Failed to open and get image: " + ImageName);
+    M_LOGGER(Logger::LogGraphics, Logger::Error, "Failed to open and get image: %s", ImageName.c_str());
     return nullptr;
 }
 
@@ -170,7 +171,7 @@ bool GInstance::DeleteImage(const std::string& ImageName)
     // Destroy Vulkan image and free memory
     it->second.ImageResource.DestroyTexture(this);
 
-    M_LOGGER(Logger::LogGraphics, Logger::Info, "Deleting image: " + ImageName);
+    M_LOGGER(Logger::LogGraphics, Logger::Info, "Deleting image: %s", ImageName.c_str());
     mTextures.erase(it);
     return true;
 }
@@ -179,7 +180,7 @@ bool GInstance::AddWindow(MWindow& newWindow)
 {
     if (mWindows.contains(newWindow.Name))
     {
-        M_LOGGER(Logger::LogCore, Logger::Warning, "Window with name " + newWindow.Name + " already exists. Use a different name.");
+        M_LOGGER(Logger::LogCore, Logger::Warning, "Window with name %s already exists. Use a different name.", newWindow.Name.c_str());
         return false;
     }
     mWindows.emplace(newWindow.Name, newWindow);
@@ -207,10 +208,10 @@ std::map<std::string, Image*> GInstance::LoadResources(const std::string& Window
 
         if (!OpenImage(data.Path, data.Name, data.Position, data.Scale))
         {
-            M_LOGGER(Logger::LogCore, Logger::Warning, "Failed to load image: " + data.Path);
+            M_LOGGER(Logger::LogCore, Logger::Warning, "Failed to load image: %s", data.Path.c_str());
         } else
         {
-            M_LOGGER(Logger::LogCore, Logger::Info, "Loaded image: " + data.Path + " as '" + data.Name + "'");
+            M_LOGGER(Logger::LogCore, Logger::Info, "Loaded image: %s as \"%s\"", data.Path.c_str(), data.Name.c_str());
             Images.emplace(data.Name, &mTextures.at(data.Name));
         }
     }
@@ -228,11 +229,11 @@ bool GInstance::LoadResources()
     {
         if (!OpenImage(data.Path, data.Name, data.Position, data.Scale))
         {
-            M_LOGGER(Logger::LogCore, Logger::Warning, "Failed to load image: " + data.Path);
+            M_LOGGER(Logger::LogCore, Logger::Warning, "Failed to load image: %s", data.Path.c_str());
             allSuccess = false;
         } else
         {
-            M_LOGGER(Logger::LogCore, Logger::Info, "Loaded image: " + data.Path + " as '" + data.Name + "'");
+            M_LOGGER(Logger::LogCore, Logger::Info, "Loaded image: %s as %s", data.Path.c_str(), data.Name.c_str());
         }
     }
 
@@ -242,6 +243,7 @@ bool GInstance::LoadResources()
 void GInstance::PreWindowInit()
 {
     ParseResources();
+    SetupInputHandlers();
 }
 
 /******************************************************************************
@@ -644,7 +646,7 @@ int GInstance::Program()
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
     SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    SDL_ShowWindow(window);
+    // SDL_ShowWindow(window);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -829,8 +831,6 @@ int GInstance::Program()
         float deltaTime = io.DeltaTime;
         Render(deltaTime);
 
-
-
         // Rendering
         ImGui::Render();
         ImDrawData* main_draw_data = ImGui::GetDrawData();
@@ -878,7 +878,100 @@ int GInstance::Program()
     return 0;
 }
 
+void GInstance::HandleUserInput()
+{
+    SDL_Event event;
+    while (SDL_PollEvent(&event))
+    {
+        // Handle user input here (keyboard, mouse, gamepad, etc.)
+        UserEventData eventData{};
+
+        ImGui_ImplSDL3_ProcessEvent(&event); // Pass event to ImGui
+        if (event.type == SDL_EVENT_QUIT)
+        {
+            // TODO: Handle quit event
+            return;
+        }
+
+        if (event.type == SDL_EVENT_GAMEPAD_ADDED)
+        {
+        } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED)
+        {
+        } else if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)
+        {
+            eventData.eventType = (event.type == SDL_EVENT_KEY_DOWN) ? UserEventType::UI_Event_Keypress : UserEventType::UI_Event_KeyUp;
+            eventData.keyCode = event.key.scancode;
+            // Process key event
+        } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP)
+        {
+            if (event.button.button == SDL_BUTTON_LEFT)
+            {
+                eventData.eventType = UserEventType::UI_Event_LeftClick;
+            }
+            else if (event.button.button == SDL_BUTTON_RIGHT)
+            {
+                eventData.eventType = UserEventType::UI_Event_RightClick;
+            }
+            else if (event.button.button == SDL_BUTTON_MIDDLE)
+            {
+                eventData.eventType = UserEventType::UI_Event_MiddleClick;
+            }
+
+            eventData.mouseX = event.button.x;
+            eventData.mouseY = event.button.y;
+            // Process mouse button event
+        } else if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION)
+        {
+            eventData.eventType = UserEventType::UI_Event_GamepadEvent;
+
+            if (event.gtouchpad.which == SDL_GAMEPAD_AXIS_LEFTX)
+            {
+                eventData.gamepadLeftAxisX = event.gtouchpad.x;
+            }
+            if (event.gtouchpad.which == SDL_GAMEPAD_AXIS_LEFTY)
+            {
+                eventData.gamepadLeftAxisY = event.gtouchpad.y;
+            }
+            if (event.gtouchpad.which == SDL_GAMEPAD_AXIS_RIGHTX)
+            {
+                eventData.gamepadRightAxisX = event.gtouchpad.x;
+            }
+            else if (event.gtouchpad.which == SDL_GAMEPAD_AXIS_RIGHTY)
+            {
+                eventData.gamepadRightAxisY = event.gtouchpad.y;
+            }
+            else if (event.gtouchpad.which == SDL_GAMEPAD_AXIS_LEFT_TRIGGER)
+            {
+                eventData.gamepadTriggerLeft = event.gtouchpad.pressure;
+            }
+            else if (event.gtouchpad.which == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+            {
+                eventData.gamepadTriggerLeft = event.gtouchpad.pressure;
+            }
+
+            // Process mouse motion event
+        }
+    }
+}
+
 void GInstance::ParseResources()
 {
     mResourceLoader.LoadResources(RESOURCE_RELATIVE_PATH);
+}
+
+void GInstance::SetupInputHandlers()
+{
+    mImGuiIO = ImGui::GetIO();
+    const auto mouseButtons = SDL_GetMouseState(&mImGuiIO.MousePos.x, &mImGuiIO.MousePos.y);
+    mImGuiIO.MouseWheel = ImGui::GetIO().MouseWheel;
+    mImGuiIO.MouseDown[0] = ((mouseButtons & SDL_BUTTON_LMASK) != 0);
+    mImGuiIO.MouseDown[1] = ((mouseButtons & SDL_BUTTON_MMASK) != 0);
+    mImGuiIO.MouseDown[2] = ((mouseButtons & SDL_BUTTON_RMASK) != 0);
+    // TODO: Add gamepad support
+    // TODO: Spin off a new thread to just wait for input
+}
+
+void GInstance::RequestExit()
+{
+    RunLoop = false;
 }

@@ -15,7 +15,7 @@ bool ResourceLoader::LoadResources(const std::string& FilePath)
     std::ifstream file(FilePath);
     if (!file.is_open())
     {
-        M_LOGGER(Logger::LogCore, Logger::Error, "Failed to open resource file: " + FilePath);
+        M_LOGGER(Logger::LogCore, Logger::Error, "Failed to open resource file: %s", FilePath.c_str());
         return false;
     }
 
@@ -24,7 +24,7 @@ bool ResourceLoader::LoadResources(const std::string& FilePath)
 
     if (images == json::value_t::discarded || !images.is_array())
     {
-        M_LOGGER(Logger::LogCore, Logger::Error, "Invalid or missing 'images' array in resource file: " + FilePath);
+        M_LOGGER(Logger::LogCore, Logger::Error, "Invalid or missing 'images' array in resource file: %s", FilePath.c_str());
         return false;
     }
 
@@ -66,7 +66,7 @@ bool ResourceLoader::LoadResources(const std::string& FilePath)
         ImageData.emplace(data.Name, data);
     }
 
-    M_LOGGER(Logger::LogCore, Logger::Info, "Successfully loaded resources from: " + FilePath);
+    M_LOGGER(Logger::LogCore, Logger::Info, "Successfully loaded resources from: %s", FilePath.c_str());
     return true;
 }
 

@@ -14,6 +14,8 @@
 #include "imgui.h"
 
 
+struct MeshPushConstants; // forward declare so we can reference in DrawWithShaders without defining the struct here
+
 class VkImageResource : public GenericImageResource
 {
 public:
@@ -23,6 +25,8 @@ public:
     VkDeviceMemory Memory = VK_NULL_HANDLE;
     VkImageView ImageView = VK_NULL_HANDLE;
     VkSampler Sampler = VK_NULL_HANDLE;
+    VkFramebuffer Framebuffer = VK_NULL_HANDLE;
+    VkRenderPass RenderPass = VK_NULL_HANDLE;
 
     VkDescriptorSet DescriptorSet = VK_NULL_HANDLE;
 
@@ -37,6 +41,10 @@ public:
     void DestroyTexture(void* gInstance) override;
 
     void CreateCanvas(uint32 width, uint32 height, Color baseColor) override;
+
+    void CreateRenderTarget(uint32 width, uint32 height);
+    void DrawWithShaders(VkCommandBuffer cmd, VkPipeline pipeline, VkPipelineLayout layout, uint32 vCount, VkDescriptorSet* descriptorSet,
+        uint8 numDescriptors, const MeshPushConstants* pc) const;
 
     void SetClearColor(Color color) override;
 

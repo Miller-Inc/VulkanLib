@@ -13,9 +13,12 @@
 ///     the necessary functionality and adding the window to the render loop in the GameInstance class.
 
 #pragma once
+#include <functional>
 #include <map>
 #include <string>
 #include "imgui.h" // Include ImGui for GUI rendering for this class and all derived classes
+#include "BaseTypes/Vector2.h"
+#include "UserInteraction/UI_Callbacks.h"
 
 class GInstance; // Forward declaration of GInstance
 class Image; // Forward declaration of Image
@@ -56,9 +59,19 @@ protected:
 
     /// Map to hold images/textures associated with this window
     std::map<std::string, Image*> mTextures{}; // Map to hold textures with string keys
+
+    /// Get the current mouse position within the window
+    static MVector2 GetMousePosInWindow() ;
+
+    /// Get the mouse movement delta since the last frame within the window
+    static MVector2 GetMouseDeltaInWindow();
+
 public:
     WindowBase() = default;
 
     /// Get the name of the window
     [[nodiscard]] std::string GetName() const { return Name; }
+
+private:
+    std::vector<UserEventCallback> OnMouseClickCallbacks;
 };

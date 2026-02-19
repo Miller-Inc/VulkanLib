@@ -15,6 +15,7 @@
 #include "ResourceLoader.h" // Resource loading utilities
 #include "VulkanSetup.hpp"
 #include "BaseTypes/Image.h"
+#include "UserInteraction/UI_Callbacks.h"
 
 /// Define the path to the resources JSON file
 #define RESOURCE_RELATIVE_PATH "Resources/resources.json"
@@ -56,6 +57,8 @@ public:
 
     /// Render the game instance, called every frame
     void Render(float deltaTime); // Render the game instance
+
+    float EngineTime = 0.0f; // Track total engine time since start
 
     /// Texture Management
 
@@ -107,10 +110,17 @@ private:
     bool IsRunning = false;
     bool RunLoop = true;
 
+    void HandleUserInput();
+
     /// Resource loader instance, handles loading resources from disk and labeling them for use
     ResourceLoader mResourceLoader{};
 
     void ParseResources();
+    ImGuiIO mImGuiIO{};
 
+    void SetupInputHandlers();
 
+    void RequestExit(); // Request the main loop to exit
+
+    std::vector<UserEventCallback> OnUserEventCallbacks;
 };

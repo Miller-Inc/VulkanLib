@@ -19,7 +19,7 @@ To get started, follow these steps:
 > be added in future releases. 
 
 1. Ensure you have the following prerequisites installed:
-   - C++17 compatible compiler
+   - C++20 compatible compiler
    - CMake 4.0 or higher
    - Vulkan SDK 1.4 or higher
 

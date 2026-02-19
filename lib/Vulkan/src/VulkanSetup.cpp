@@ -6,6 +6,7 @@
 #include "imgui_impl_vulkan.h"
 #include "stb_image.h"
 #include "Logger.h"
+#include "OperatorsExtentions.h"
 
 namespace GPU
 {
@@ -104,7 +105,7 @@ namespace GPU
         const VkDeviceSize imageSize = texWidth * texHeight * 4;
 
         if (!pixels) {
-            M_LOGGER(Logger::LogGraphics, Logger::Error, "Failed to load texture image from path: " + filename);
+            M_LOGGER(Logger::LogGraphics, Logger::Error, "Failed to load texture image from path: %s", filename.c_str());
             return { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, {0, 0} };
         }
 

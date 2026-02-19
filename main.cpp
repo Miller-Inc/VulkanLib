@@ -6,6 +6,7 @@
 #include "Core.h"
 #include "GInstance.h"
 #include "Windows/Viewport.h"
+#define ENABLE_DEBUG_LOGGING
 
 int main()
 {

@@ -12,7 +12,25 @@ find_package(CUDAToolkit REQUIRED)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIGURATION>")
 
-find_package(Vulkan REQUIRED)
+set(USE_VULKAN_SHADERS ON)
+if(${USE_VULKAN_SHADERS})
+    find_package(Vulkan REQUIRED)
+    if (WIN32)
+        set(GLSLANG_VALIDATOR_EXECUTABLE "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe")
+    elseif(UNIX)
+        set(GLSLANG_VALIDATOR_EXECUTABLE "$ENV{VULKAN_SDK}/bin/glslangValidator")
+    endif()
+#    find_program(GLSLANG_VALIDATOR_EXECUTABLE
+#            NAMES glslangValidator glslangValidator.exe
+#            HINTS ENV PATH
+#    )
+
+    if(NOT GLSLANG_VALIDATOR_EXECUTABLE)
+        message(FATAL_ERROR "glslangValidator not found.")
+    else()
+        message(STATUS "Using glslangValidator: ${GLSLANG_VALIDATOR_EXECUTABLE}")
+    endif()
+endif()
 
 # Icon Handling
 if (WIN32)
@@ -48,7 +66,8 @@ elseif (WIN32 AND CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
     set(EXE_FLAGS WIN32)
     message(STATUS "Building for Windows Release with flags: ${EXE_FLAGS}")
 else()
-    set(EXE_FLAGS "")
+    set(EXE_FLAGS ""
+            lib/Engine/include/OperatorsExtentions.h)
 endif()
 
 # List of source files for the MillerVulkanLib executable
@@ -62,6 +81,8 @@ set(MILLER_RENDER_LIB_SOURCES
     lib/Engine/src/Windows/Viewport.cpp
     lib/Vulkan/src/VulkanHelpers.cpp
     lib/Vulkan/src/VulkanImage.cpp
+    lib/Engine/src/BaseTypes/Color.cpp
+    lib/Vulkan/src/VulkanViewport.cpp
 )
 
 # List of header files for the MillerVulkanLib executable
@@ -82,8 +103,10 @@ set(MILLER_RENDER_LIB_HEADERS
     lib/GenericPlatform/include/GenericImage.h
     lib/Engine/include/BaseTypes/Image.h
     lib/Engine/include/BaseTypes/Color.h
-    lib/Engine/src/BaseTypes/Color.cpp
     lib/Vulkan/include/VulkanInclude.h
+    lib/Engine/include/UserInteraction/UI_Callbacks.h
+    lib/Vulkan/include/VulkanViewport.h
+    lib/Engine/include/BaseTypes/Primitives/RenderingPrimitives.h
 )
 
 add_library(MillerVulkanObject OBJECT
@@ -253,3 +276,82 @@ add_custom_command(TARGET MillerVulkanLib POST_BUILD
 
 # tell the compiler we link the static CUDA runtime
 target_compile_definitions(MillerVulkanLib PRIVATE CUDART_STATIC)
+
+# Setup Vulkan Shaders
+
+if(${USE_VULKAN_SHADERS})
+    set(SHADER_SOURCE_DIR "${CMAKE_SOURCE_DIR}/shaders/vulkan")
+    set(SHADER_BINARY_DIR "${CMAKE_BINARY_DIR}/shaders/vulkan")
+
+    file(MAKE_DIRECTORY ${SHADER_BINARY_DIR})
+
+    # Also add a global definition so SHADER_DIR is available everywhere
+    add_definitions(-DSHADER_DIR=\"${SHADER_BINARY_DIR}\")
+    message(STATUS "Shader source directory: ${SHADER_SOURCE_DIR}")
+
+    file(GLOB SHADER_FILES "${SHADER_SOURCE_DIR}/*.vert" "${SHADER_SOURCE_DIR}/*.frag" "${SHADER_SOURCE_DIR}/*.comp")
+    message(STATUS "Found shader files: ${SHADER_FILES}")
+
+    foreach(SHADER_FILE ${SHADER_FILES})
+        get_filename_component(SHADER_FILENAME ${SHADER_FILE} NAME)
+        set(SPIRV_OUTPUT "${SHADER_BINARY_DIR}/${SHADER_FILENAME}.spv")
+
+        add_custom_command(
+                OUTPUT ${SPIRV_OUTPUT}
+                COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader: ${SHADER_FILENAME}"
+                COMMAND ${GLSLANG_VALIDATOR_EXECUTABLE} -V ${SHADER_FILE} -o ${SPIRV_OUTPUT}
+                DEPENDS ${SHADER_FILE}
+                COMMENT "Compiling shader ${SHADER_FILENAME} to SPIR-V"
+        )
+
+        list(APPEND SPIRV_SHADER_FILES ${SPIRV_OUTPUT})
+    endforeach()
+
+    add_custom_target(Shaders ALL DEPENDS ${SPIRV_SHADER_FILES})
+
+    add_dependencies(MillerVulkanLib Shaders)
+    add_dependencies(MillerVulkanLibDyn Shaders)
+    add_dependencies(MillerVulkanExec Shaders)
+    add_dependencies(MillerVulkanObject Shaders)
+
+    # Make SHADER_DIR available to the C++ sources: point to shader binary directory
+    # Use an escaped string so it becomes a valid C string literal when used in code
+    foreach(_tgt MillerVulkanLib MillerVulkanLibDyn MillerVulkanObject MillerVulkanExec)
+        if(TARGET ${_tgt})
+            # Use generator expression to ensure correct config-specific path on multi-config generators
+            target_compile_definitions(${_tgt} PRIVATE SHADER_DIR=\"${CMAKE_BINARY_DIR}/shaders/vulkan\")
+        endif()
+    endforeach()
+endif()
+
+# Define logging macros based on build type
+# LOGGING_ENABLED: 1 = enabled, 0 = disabled
+# LOGGING_LEVEL: 2 = full (debug/development), 1 = minimal (release), 0 = none (shipping / MinSizeRel)
+string(TOLOWER "${CMAKE_BUILD_TYPE}" _build_type_lc)
+set(LOGGING_ENABLED 0)
+set(LOGGING_LEVEL 0)
+
+if(_build_type_lc STREQUAL "debug" OR _build_type_lc MATCHES ".*debug.*" OR _build_type_lc STREQUAL "development" OR _build_type_lc MATCHES ".*dev.*")
+    set(LOGGING_ENABLED 1)
+    set(LOGGING_LEVEL 2)
+elseif(_build_type_lc STREQUAL "release" OR _build_type_lc MATCHES ".*release.*")
+    set(LOGGING_ENABLED 1)
+    set(LOGGING_LEVEL 1)
+elseif(_build_type_lc STREQUAL "minsizerel" OR _build_type_lc MATCHES ".*ship.*" OR _build_type_lc MATCHES ".*shipping.*")
+    set(LOGGING_ENABLED 0)
+    set(LOGGING_LEVEL 0)
+else()
+    # Default conservative behavior: enable minimal logging
+    set(LOGGING_ENABLED 1)
+    set(LOGGING_LEVEL 1)
+endif()
+
+message(STATUS "CMake build type='${CMAKE_BUILD_TYPE}' -> LOGGING_ENABLED=${LOGGING_ENABLED}, LOGGING_LEVEL=${LOGGING_LEVEL}")
+
+# Export logging macros to targets
+# Remove the old ENABLE_DEBUG_LOGGING usage and use LOGGING_* instead
+foreach(_tgt MillerVulkanLib MillerVulkanLibDyn MillerVulkanObject MillerVulkanExec)
+    if(TARGET ${_tgt})
+        target_compile_definitions(${_tgt} PRIVATE LOGGING_ENABLED=${LOGGING_ENABLED} LOGGING_LEVEL=${LOGGING_LEVEL})
+    endif()
+endforeach()

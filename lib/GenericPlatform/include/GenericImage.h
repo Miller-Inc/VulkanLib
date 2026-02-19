@@ -21,6 +21,10 @@ public:
     void* ImageView = nullptr;
     /// Platform/API specific sampler object
     void* Sampler = nullptr;
+    /// Platform/API specific framebuffer object
+    void* Framebuffer = nullptr;
+    /// Platform/API specific render pass object
+    void* RenderPass = nullptr;
 
     /// Platform/API specific descriptor set or texture ID
     void* DescriptorSet = nullptr;

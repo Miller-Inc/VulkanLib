@@ -3,6 +3,8 @@
 //
 
 #include "VulkanImage.h"
+// Include VulkanViewport to get MeshPushConstants definition used in DrawWithShaders
+#include "VulkanViewport.h"
 
 #if USE_VULKAN
 #include <algorithm>
@@ -31,33 +33,30 @@ void VkImageResource::RegisterTexture()
 {
     if (bInit) return;
 
-    if (Sampler == VK_NULL_HANDLE || ImageView == VK_NULL_HANDLE || Image == VK_NULL_HANDLE)
+    if (Sampler == VK_NULL_HANDLE)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Error,
-            "VkImageResource::RegisterTexture: invalid handles. Sampler/View/Image may be VK_NULL_HANDLE. "
-            "Sampler=" + std::to_string((uint64_t)Sampler) +
-            " ImageView=" + std::to_string((uint64_t)ImageView) +
-            " Image=" + std::to_string((uint64_t)Image));
-        return;
+        Sampler = GetOrCreateSampler(((GInstance*)gInstance)->GetVulkanSetup()->device);
+        std::cerr << "VkImageResource::RegisterTexture: invalid handles. Sampler=" << (uint64_t)Sampler
+                  << " ImageView=" << (uint64_t)ImageView << " Image=" << (uint64_t)Image << std::endl;
     }
 
     // Attempt to create ImGui descriptor
     DescriptorSet = ImGui_ImplVulkan_AddTexture(Sampler, ImageView, ImageLayout);
 
     // Always log the returned descriptor and handles (hex is easier to read for Vulkan handles)
-    {
-        std::ostringstream oss;
-        oss << "VkImageResource::RegisterTexture: AddTexture returned descriptor = 0x"
-            << std::hex << (uint64_t)DescriptorSet << std::dec
-            << "  Sampler=0x" << std::hex << (uint64_t)Sampler
-            << " ImageView=0x" << std::hex << (uint64_t)ImageView
-            << " Image=0x" << std::hex << (uint64_t)Image;
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Info, oss.str());
-    }
+    // {
+    //     std::ostringstream oss;
+    //     oss << "VkImageResource::RegisterTexture: AddTexture returned descriptor = 0x"
+    //         << std::hex << (uint64_t)DescriptorSet << std::dec
+    //         << "  Sampler=0x" << std::hex << (uint64_t)Sampler
+    //         << " ImageView=0x" << std::hex << (uint64_t)ImageView
+    //         << " Image=0x" << std::hex << (uint64_t)Image;
+    //     M_LOGGER(Logger::LogGraphics, Logger::Info, oss.str());
+    // }
 
     if (DescriptorSet == 0)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Error,
+        M_LOGGER(Logger::LogGraphics, Logger::Error,
             "VkImageResource::RegisterTexture: ImGui_ImplVulkan_AddTexture returned 0 (failed to allocate descriptor).");
         bInit = false;
         return;
@@ -78,7 +77,7 @@ void VkImageResource::DestroyTexture(void* gInstance)
 
     if (!GameInstance)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Warning,
+        M_LOGGER(Logger::LogGraphics, Logger::Warning,
             "VkImageResource::DestroyTexture: GInstance is null, cannot destroy Vulkan resources.");
         return;
     }
@@ -100,6 +99,13 @@ void VkImageResource::DestroyTexture(void* gInstance)
             vkFreeMemory(vSetup->device, Memory, nullptr);
             Memory = VK_NULL_HANDLE;
         }
+
+        if (Framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(vSetup->device, Framebuffer, nullptr);
+        }
+        if (RenderPass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(vSetup->device, RenderPass, nullptr);
+        }
     }
 }
 
@@ -107,13 +113,180 @@ void VkImageResource::CreateCanvas(const uint32 width, const uint32 height, cons
 {
     if (!CreateBlankCanvas(width, height))
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Error,
-            "VkImageResource::CreateCanvas: Failed to create blank canvas of size " +
-            std::to_string(width) + "x" + std::to_string(height));
+        M_LOGGER(Logger::LogGraphics, Logger::Error,
+            "VkImageResource::CreateCanvas: Failed to create blank canvas of size %d x %d",width, height);
         return;
     }
     SetClearColor(baseColor);
     RegisterTexture();
+}
+
+void VkImageResource::CreateRenderTarget(uint32_t width, uint32_t height) {
+    this->Width = width;
+    this->Height = height;
+    bInit = false;
+    if (!gInstance)
+    {
+        M_LOGGER(Logger::LogGraphics, Logger::Warning,
+            "VkImageResource::CreateRenderTarget: GInstance is null, cannot create Vulkan resources.");
+        return;
+    }
+
+    GInstance* GameInstance = (GInstance*)gInstance;
+    Format = VK_FORMAT_R8G8B8A8_UNORM;
+    ImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    Sampler = GetOrCreateSampler(GameInstance->GetVulkanSetup()->device);
+
+    // 1. Create the image with Attachment usage
+    // NOTE: You may need to update your helper to include VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+    createOrResizeImage(((GInstance*)gInstance)->GetVulkanSetup()->device, ((GInstance*)gInstance)->GetVulkanSetup()->physicalDevice, Width, Height, Format, &Image, &Memory, &ImageView);
+
+    // Ensure the image and its view were created successfully
+    if (Image == VK_NULL_HANDLE || ImageView == VK_NULL_HANDLE) {
+        std::cerr << "VkImageResource::CreateRenderTarget - image or imageView creation failed (Image=" << (uint64_t)Image << " ImageView=" << (uint64_t)ImageView << ")\n";
+        // Clean up any partial image/memory
+        if (ImageView != VK_NULL_HANDLE) { vkDestroyImageView(((GInstance*)gInstance)->GetVulkanSetup()->device, ImageView, nullptr); ImageView = VK_NULL_HANDLE; }
+        if (Image != VK_NULL_HANDLE) { vkDestroyImage(((GInstance*)gInstance)->GetVulkanSetup()->device, Image, nullptr); Image = VK_NULL_HANDLE; }
+        if (Memory != VK_NULL_HANDLE) { vkFreeMemory(((GInstance*)gInstance)->GetVulkanSetup()->device, Memory, nullptr); Memory = VK_NULL_HANDLE; }
+        return;
+    }
+
+    // 2. Set up the Render Pass (Defining the "Slot" for the shader output)
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = Format;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // Clear image before drawing
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // Save results after drawing
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for ImGui
+
+    VkAttachmentReference colorAttachmentRef{};
+    colorAttachmentRef.attachment = 0;
+    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef;
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+
+    VkResult rpRes = vkCreateRenderPass(((GInstance*)gInstance)->GetVulkanSetup()->device, &renderPassInfo, nullptr, &this->RenderPass);
+    if (rpRes != VK_SUCCESS) {
+        std::cerr << "VkImageResource::CreateRenderTarget - vkCreateRenderPass failed (code=" << (int)rpRes << ")" << std::endl;
+        this->RenderPass = VK_NULL_HANDLE;
+        // Cleanup any created image/view/memory to avoid partial state
+        if (ImageView != VK_NULL_HANDLE) { vkDestroyImageView(((GInstance*)gInstance)->GetVulkanSetup()->device, ImageView, nullptr); ImageView = VK_NULL_HANDLE; }
+        if (Image != VK_NULL_HANDLE) { vkDestroyImage(((GInstance*)gInstance)->GetVulkanSetup()->device, Image, nullptr); Image = VK_NULL_HANDLE; }
+        if (Memory != VK_NULL_HANDLE) { vkFreeMemory(((GInstance*)gInstance)->GetVulkanSetup()->device, Memory, nullptr); Memory = VK_NULL_HANDLE; }
+        return;
+    }
+
+    // 3. Create the Framebuffer
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = this->RenderPass;
+    framebufferInfo.attachmentCount = 1;
+    framebufferInfo.pAttachments = &ImageView;
+    framebufferInfo.width = Width;
+    framebufferInfo.height = Height;
+    framebufferInfo.layers = 1;
+
+    VkResult fbRes = vkCreateFramebuffer(((GInstance*)gInstance)->GetVulkanSetup()->device, &framebufferInfo, nullptr, &this->Framebuffer);
+    if (fbRes != VK_SUCCESS) {
+        std::cerr << "VkImageResource::CreateRenderTarget - vkCreateFramebuffer failed (code=" << (int)fbRes << ")" << std::endl;
+        // Destroy the render pass we created since framebuffer creation failed
+        if (this->RenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(((GInstance*)gInstance)->GetVulkanSetup()->device, this->RenderPass, nullptr); this->RenderPass = VK_NULL_HANDLE; }
+        this->Framebuffer = VK_NULL_HANDLE;
+        // cleanup image/view/memory as well
+        if (ImageView != VK_NULL_HANDLE) { vkDestroyImageView(((GInstance*)gInstance)->GetVulkanSetup()->device, ImageView, nullptr); ImageView = VK_NULL_HANDLE; }
+        if (Image != VK_NULL_HANDLE) { vkDestroyImage(((GInstance*)gInstance)->GetVulkanSetup()->device, Image, nullptr); Image = VK_NULL_HANDLE; }
+        if (Memory != VK_NULL_HANDLE) { vkFreeMemory(((GInstance*)gInstance)->GetVulkanSetup()->device, Memory, nullptr); Memory = VK_NULL_HANDLE; }
+        return;
+    }
+
+    // 4. Finally, Register with ImGui
+    RegisterTexture();
+}
+
+void VkImageResource::DrawWithShaders(VkCommandBuffer cmd, VkPipeline pipeline, VkPipelineLayout layout, const uint32 vCount, VkDescriptorSet* descriptorSet, uint8 numDescriptors, const MeshPushConstants* pc) const
+{
+    if (this->RenderPass == VK_NULL_HANDLE || this->Framebuffer == VK_NULL_HANDLE) {
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "VkImageResource::DrawWithShaders - invalid RenderPass or Framebuffer");
+        return;
+    }
+
+    // 1. Define the clear color (Background of your viewport)
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+
+    // 2. Start the Render Pass targeting THIS image's framebuffer
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = this->RenderPass;
+    renderPassInfo.framebuffer = this->Framebuffer;
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = {Width, Height};
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearColor;
+
+    // Begin!
+    if (cmd == VK_NULL_HANDLE) {
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "VkImageResource::DrawWithShaders - cmd is VK_NULL_HANDLE");
+        return;
+    }
+    vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Validate pipeline and layout
+    if (pipeline == VK_NULL_HANDLE) {
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "VkImageResource::DrawWithShaders - pipeline is VK_NULL_HANDLE");
+        vkCmdEndRenderPass(cmd);
+        return;
+    }
+    if (layout == VK_NULL_HANDLE) {
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "VkImageResource::DrawWithShaders - pipeline layout is VK_NULL_HANDLE");
+        vkCmdEndRenderPass(cmd);
+        return;
+    }
+
+    // Bind the provided pipeline
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Set Dynamic Viewport/Scissor (Best practice for resizable ImGui windows)
+    VkViewport viewport{0.0f, 0.0f, (float)Width, (float)Height, 0.0f, 1.0f};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{{0, 0}, {Width, Height}};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    // If a push-constant struct was provided, push it
+    if (pc && layout != VK_NULL_HANDLE) {
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), pc);
+    }
+
+    for (uint8 i = 0; i < numDescriptors; i++)
+    {
+        if (descriptorSet[i] != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet[i], 0, nullptr);
+        }
+    }
+
+    // vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 3, descriptorSet, 0, nullptr);
+
+    // Bind descriptor set if provided
+    // if (descriptorSet != VK_NULL_HANDLE && layout != VK_NULL_HANDLE) {
+        // vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptorSet, 0, nullptr);
+    // }
+
+    // Draw 3 vertices for our hardcoded triangle
+    vkCmdDraw(cmd, vCount, 1, 0, 0);
+
+    vkCmdEndRenderPass(cmd);
 }
 
 void VkImageResource::SetClearColor(const Color color)
@@ -121,7 +294,7 @@ void VkImageResource::SetClearColor(const Color color)
 
     if (!gInstance)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Warning,
+        M_LOGGER(Logger::LogGraphics, Logger::Warning,
             "VkImageResource::CreateBlankCanvas: GInstance is null, cannot create Vulkan resources.");
         return;
     }
@@ -161,7 +334,7 @@ bool VkImageResource::CreateBlankCanvas(const uint32_t width, const uint32_t hei
 
     if (!gInstance)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Warning,
+        M_LOGGER(Logger::LogGraphics, Logger::Warning,
             "VkImageResource::CreateBlankCanvas: GInstance is null, cannot create Vulkan resources.");
         return false;
     }
@@ -187,7 +360,7 @@ bool VkImageResource::CreateBlankCanvas(const uint32_t width, const uint32_t hei
 
     if (vkCreateImage(device, &imageInfo, nullptr, &Image) != VK_SUCCESS) return false;
 
-    // 2. Memory Allocation (Simplified - using VMA is highly recommended here)
+    // 2. Memory Allocation
     VkMemoryRequirements memReqs;
     vkGetImageMemoryRequirements(device, Image, &memReqs);
 
@@ -218,9 +391,6 @@ bool VkImageResource::CreateBlankCanvas(const uint32_t width, const uint32_t hei
 
     // 5. Transition Layout to SHADER_READ_ONLY_OPTIMAL
     TransitionImageLayout(device, commandPool, graphicsQueue, Image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    // 6. Register with ImGui
-    // DescriptorSet = ImGui_ImplVulkan_AddTexture(Sampler, ImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     return true;
 }
@@ -259,21 +429,20 @@ void VkImageResource::DumpDebugInfo() const
         << " ImageView=0x" << std::hex << (uint64_t)ImageView
         << " Image=0x" << std::hex << (uint64_t)Image
         << " Format=" << std::dec << Format;
-    M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Info, oss.str());
 }
 
 void VkImageResource::DumpToPNG(const std::string& path) const
 {
     if (!gInstance)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Warning, "DumpToPNG: GInstance is null.");
+        M_LOGGER(Logger::LogGraphics, Logger::Warning, "DumpToPNG: GInstance is null.");
         return;
     }
     const GInstance* GameInstance = (GInstance*)gInstance;
     const auto vSetup = GameInstance->GetVulkanSetup();
     if (!vSetup)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Warning, "DumpToPNG: Vulkan setup missing.");
+        M_LOGGER(Logger::LogGraphics, Logger::Warning, "DumpToPNG: Vulkan setup missing.");
         return;
     }
 
@@ -284,7 +453,7 @@ void VkImageResource::DumpToPNG(const std::string& path) const
 
     if (Width == 0 || Height == 0)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Warning, "DumpToPNG: zero-sized image.");
+        M_LOGGER(Logger::LogGraphics, Logger::Warning, "DumpToPNG: zero-sized image.");
         return;
     }
 
@@ -301,7 +470,7 @@ void VkImageResource::DumpToPNG(const std::string& path) const
 
     if (vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Error, "DumpToPNG: vkCreateBuffer failed.");
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "DumpToPNG: vkCreateBuffer failed.");
         return;
     }
 
@@ -315,7 +484,7 @@ void VkImageResource::DumpToPNG(const std::string& path) const
     if (vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS)
     {
         vkDestroyBuffer(device, stagingBuffer, nullptr);
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Error, "DumpToPNG: vkAllocateMemory failed.");
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "DumpToPNG: vkAllocateMemory failed.");
         return;
     }
 
@@ -354,7 +523,7 @@ void VkImageResource::DumpToPNG(const std::string& path) const
     vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
     if (!mapped)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Error, "DumpToPNG: vkMapMemory failed.");
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "DumpToPNG: vkMapMemory failed.");
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingMemory, nullptr);
         return;
@@ -374,15 +543,15 @@ void VkImageResource::DumpToPNG(const std::string& path) const
 
     if (writeResult)
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Info, std::string("DumpToPNG: wrote ") + path);
+        M_LOGGER(Logger::LogGraphics, Logger::Info, "DumpToPNG: wrote %s", path.c_str());
     }
     else
     {
-        M_LOGGER(Logger::LogGraphics, Logger::LogLevel::Error, std::string("DumpToPNG: failed to write ") + path);
+        M_LOGGER(Logger::LogGraphics, Logger::Error, "DumpToPNG: failed to write %s", path.c_str());
     }
 }
 
-static inline uint8_t float_to_u8(float v) {
+static uint8_t float_to_u8(float v) {
     v = std::clamp(v, 0.0f, 1.0f);
     return static_cast<uint8_t>(std::lround(v * 255.0f));
 }
@@ -805,7 +974,7 @@ bool VkImageResource::DrawFilledCircle(int cx, int cy, int radius, const Color& 
         vkFreeMemory(device, stagingMemory, nullptr);
         return false;
     }
-    uint8_t* writePtr = reinterpret_cast<uint8_t*>(mapped);
+    uint8_t* writePtr = static_cast<uint8_t*>(mapped);
     for (const Seg& s : segments) {
         size_t segBytes = (size_t)s.w * 4;
         // fill with color
